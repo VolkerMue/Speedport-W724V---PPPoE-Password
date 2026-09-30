@@ -1,4 +1,4 @@
-# Speedport W724V – PPPoE Config Reader
+# Speedport W724V Type A – PPPoE Config Reader
 
 A small offline tool to recover PPPoE credentials from a **Telekom Speedport W724V Type A** configuration backup.
 
@@ -11,8 +11,8 @@ Type B / Type C and other firmware versions are not yet supported.
 
 ## Features
 
-- Decrypts the `.config` backup file entirely **offline**
-- Extracts all stored PPP profiles (Telekom, other ISPs, BNG) Shows username and masked password
+- Decrypts the `.config` backup file
+- Extracts stored PPP profiles and shows username and masked password
 - Two interfaces: a single HTML file for the browser, and a Python script with GUI or CLI
 
 ---
@@ -20,11 +20,9 @@ Type B / Type C and other firmware versions are not yet supported.
 ## Browser Tool
 
 1. Download `Speedport_W724V_TypA_Browsertool.html`
-2. Open it by double-clicking — works in any recent Chrome, Edge or Firefox
+2. Open it with your browser
 3. Select or drag-and-drop your `.config` backup file
 4. Username and password appear immediately
-
-The page contains no external resources and cannot make network connections (enforced by Content Security Policy).
 
 ---
 
@@ -78,7 +76,6 @@ Only the resulting firmware constants are included in this tool — no personal 
 ## Limitations
 
 - Tested with **W724V Type A**, firmware `05011603.06.003` only
-- Stored credentials do not prove that the ISP currently accepts them
 
 ---
 
