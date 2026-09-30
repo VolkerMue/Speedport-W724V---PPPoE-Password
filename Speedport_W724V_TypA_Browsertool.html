@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Speedport W724V Type A – PPPoE Config Reader</title>
+<style>
+body{font:14px system-ui,sans-serif;max-width:680px;margin:32px auto;padding:0 16px;color:#222;background:#fff}h1{font-size:20px}p{line-height:1.5;color:#555}label.field{display:block;margin:16px 0 6px}.row{display:flex;gap:8px}.row input,select{flex:1;min-width:0;padding:7px;font:14px monospace}select{width:100%}button{padding:6px 12px;cursor:pointer}.check{display:block;margin:12px 0}#status{margin:16px 0;overflow-wrap:anywhere}.error{color:#a00}.ok{color:#165b23}#results[hidden]{display:none}small{display:block;margin:18px 0;color:#555}
+</style>
+<main>
+<h1>Speedport W724V Type A – PPPoE Config Reader</h1>
+<p>W724V Type A / 05011603.06.003</p>
+<label for="file">Config file</label> <input id="file" type="file" accept=".config">
+<div id="status" role="status" aria-live="polite">Select a .config file.</div>
+<div id="results" hidden>
+<label class="field" for="profiles">Profile</label><select id="profiles"></select>
+<label class="field" for="username">Username</label><div class="row"><input id="username" readonly spellcheck="false"><button id="copyUser">Copy</button></div>
+<label class="field" for="password">Password</label><div class="row"><input id="password" type="password" readonly autocomplete="off"><button id="copyPassword">Copy</button></div>
+<label class="check"><input type="checkbox" id="reveal"> Show password</label>
+<button id="clear">Clear</button>
+</div>
+<small>Types B and C are not supported.</small>
+</main>
+<script>
+
+'use strict';
+const $=id=>document.getElementById(id);
+const hex=s=>Uint8Array.from(s.match(/../g),x=>parseInt(x,16));
+const KEY=hex('6C28B1FEB2B82A9D129AB6BF1D139EF2FF58EF5A0478282DF25E84E46816E5CB');
+const IV=hex('3304ADCE208C07E6655B009A10F8AC53');
+let records=[],generation=0;
+function status(message,kind=''){$('status').textContent=message;$('status').className='status '+kind;}
+function reset(){records=[];$('results').hidden=true;$('username').value='';$('password').value='';$('profiles').replaceChildren();$('reveal').checked=false;$('password').type='password';}
+async function inflate(bytes){
+ const reader=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate')).getReader();
+ const parts=[];let total=0;
+ try{while(true){const {value,done}=await reader.read();if(done)break;total+=value.length;if(total>32*1024*1024)throw new Error('Decompressed configuration is too large.');parts.push(value);}}
+ catch(e){await reader.cancel().catch(()=>{});throw e;}
+ const result=new Uint8Array(total);let pos=0;for(const part of parts){result.set(part,pos);pos+=part.length;}return result;
+}
+async function decode(data){
+ if(!crypto.subtle||typeof DecompressionStream==='undefined')throw new Error('Unsupported browser. Use a current Chrome, Edge or Firefox.');
+ if(!data.length||data.length>16*1024*1024||data.length%16)throw new Error('Invalid backup file size (maximum 16 MiB).');
+ const key=await crypto.subtle.importKey('raw',KEY,'AES-CBC',false,['encrypt','decrypt']);
+ // Web Crypto requires PKCS#7, whereas this firmware uses zero padding.
+ // Append a ciphertext block which decrypts to a complete PKCS#7 pad block.
+ // No original ciphertext or plaintext is altered by this compatibility step.
+ const extra=new Uint8Array(await crypto.subtle.encrypt({name:'AES-CBC',iv:data.slice(-16)},key,new Uint8Array(0)));
+ const extended=new Uint8Array(data.length+16);extended.set(data);extended.set(extra,data.length);
+ const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-CBC',iv:IV},key,extended));
+ if(plain[0]!==0x78)throw new Error('Unsupported or corrupted W724V Type A backup.');
+ // zlib readers differ in their treatment of zero padding after the stream.
+ let xmlBytes;for(let trim=0;trim<=16;trim++){
+  if(trim&&plain[plain.length-trim]!==0)break;
+  try{xmlBytes=await inflate(plain.subarray(0,plain.length-trim));break;}catch(e){if(trim===16)throw new Error('Cannot decompress configuration.');}
+ }
+ if(!xmlBytes)throw new Error('Cannot decompress configuration.');
+ const xml=new TextDecoder('utf-8',{fatal:true}).decode(xmlBytes).replace(/\0+$/,'');
+ if(/<!DOCTYPE|<!ENTITY/i.test(xml))throw new Error('Unexpected XML declaration.');
+ const doc=new DOMParser().parseFromString(xml,'application/xml');
+ if(doc.querySelector('parsererror')||doc.documentElement.tagName!=='InternetGatewayDeviceConfig')throw new Error('Decrypted data is not a valid configuration.');
+ const output=[];
+ const child=(node,name)=>Array.from(node.children).filter(e=>e.tagName===name);
+ let nodes=[doc.documentElement];for(const name of ['Device','PPP','Interface','InterfaceInstance'])nodes=nodes.flatMap(node=>child(node,name));
+ for(const node of nodes){const seen=new Set();for(const [kind,u,p] of [['PPP','Username','Password'],['Telekom','X_DtUsername','X_DtPassword'],['Other provider','X_OtherUsername','X_OtherPassword'],['BNG','X_BngUsername','X_BngPassword']]){
+  const username=node.getAttribute(u)||'',password=node.getAttribute(p)||'',pair=JSON.stringify([username,password]);
+  if(!(username||password)||seen.has(pair))continue;seen.add(pair);
+  output.push({kind,username,password,profile:node.getAttribute('InstanceID')||'?',enabled:node.getAttribute('Enable')||'?'});
+ }}
+ if(!output.length)throw new Error('No PPP credentials found.');
+ return output;
+}
+function display(){const r=records[Number($('profiles').value)];if(r){$('username').value=r.username;$('password').value=r.password;}}
+async function openFile(file){if(!file)return;const token=++generation;reset();status('Decrypting...');
+ try{if(file.size>16*1024*1024)throw new Error('File is larger than 16 MiB.');const output=await decode(new Uint8Array(await file.arrayBuffer()));if(token!==generation)return;records=output;
+  records.forEach((r,i)=>{const option=document.createElement('option');option.value=String(i);option.textContent=`Profile ${r.profile} · ${r.kind} · Enable=${r.enabled}`;$('profiles').append(option);});display();$('results').hidden=false;status(file.name+': Decrypted successfully.','ok');
+ }catch(e){if(token===generation){reset();status(e.message||'Cannot read file.','error');}}
+}
+async function copy(id){const input=$(id);try{await navigator.clipboard.writeText(input.value);status('Copied.','ok');}catch{
+ const type=input.type;input.type='text';input.focus();input.select();let copied=false;try{copied=document.execCommand('copy');}catch{}input.type=type;status(copied?'Copied.':'Copy unavailable. Select the text and press Ctrl+C.',copied?'ok':'');
+}}
+$('file').addEventListener('change',()=>openFile($('file').files[0]));
+$('profiles').addEventListener('change',display);
+$('reveal').addEventListener('change',()=>{$('password').type=$('reveal').checked?'text':'password';});
+$('copyUser').addEventListener('click',()=>copy('username'));
+$('copyPassword').addEventListener('click',()=>copy('password'));
+$('clear').addEventListener('click',()=>{generation++;reset();$('file').value='';status('Cleared. Clipboard unchanged.');});
+</script>
+</html>
